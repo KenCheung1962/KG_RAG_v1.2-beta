@@ -80,12 +80,12 @@ function renderStats(kgStats: KGStats, docStats: DocStats): void {
  */
 export function getStatsHTML(): string {
   return `
-    <div class="card">
-      <h2>📊 Knowledge Graph Stats</h2>
+    <div class="card" style="padding: 10px;">
+      <h3 style="margin: 0 0 8px 0; font-size: 13px;">📊 Knowledge Graph Stats</h3>
       <div class="stats-grid">
         <div class="stat-box">
           <div class="stat-number" id="statDocs">0</div>
-          <div class="stat-label">Documents</div>
+          <div class="stat-label">Docs</div>
         </div>
         <div class="stat-box">
           <div class="stat-number" id="statEntities">0</div>
@@ -93,14 +93,14 @@ export function getStatsHTML(): string {
         </div>
         <div class="stat-box">
           <div class="stat-number" id="statRelations">0</div>
-          <div class="stat-label">Relationships</div>
+          <div class="stat-label">Rels</div>
         </div>
         <div class="stat-box">
           <div class="stat-number" id="statChunks">0</div>
           <div class="stat-label">Chunks</div>
         </div>
       </div>
-      <button id="refreshStatsBtn" class="btn">🔄 Refresh Stats</button>
+      <button id="refreshStatsBtn" class="btn" style="margin-top: 8px; padding: 4px 10px; font-size: 11px;">🔄 Refresh</button>
     </div>
   `;
 }

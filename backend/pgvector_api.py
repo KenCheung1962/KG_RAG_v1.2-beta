@@ -2244,11 +2244,7 @@ CRITICAL REQUIREMENTS:
                 "retrieval_info": {
                     "method": "vector_similarity" if not (use_rerank and rerank_method != "none") else f"vector+{rerank_method}",
                     "chunks_retrieved": initial_k if use_rerank else requested_top_k,
-                    "chunks_reranked": len(filtered_result) if use_rerank else 0,
-                    "source_relevance": {
-                        "relevant": [s[0] for s in relevant_sources],
-                        "irrelevant": irrelevant_sources
-                    } if irrelevant_sources else None
+                    "chunks_reranked": len(filtered_result) if use_rerank else 0
                 }
             }
     except Exception as e:

@@ -631,10 +631,6 @@ export function getQueryFileTabHTML(): string {
     <div id="queryfile" class="tab-content card" role="tabpanel" aria-labelledby="tab-queryfile">
       <h2>🔗 Query with File(s)</h2>
       
-      <div class="query-info-banner" style="background: rgba(0, 212, 255, 0.1); border-left: 3px solid var(--accent-primary); padding: 12px 16px; margin-bottom: 15px; border-radius: 0 8px 8px 0; font-size: 13px;">
-        <strong>💡 Tip:</strong> You can use this tab while bulk uploads are in progress! 
-        New files uploaded here will be immediately indexed and queried.
-      </div>
       
       <h3>Upload Document(s)</h3>
       <label for="queryFileInput" class="sr-only">Select files to upload</label>

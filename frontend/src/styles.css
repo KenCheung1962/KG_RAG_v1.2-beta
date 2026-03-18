@@ -90,27 +90,27 @@ h3 {
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 15px;
-  margin: var(--spacing) 0;
+  gap: 6px;
+  margin: 8px 0;
 }
 
 .stat-box {
   background: rgba(255, 255, 255, 0.1);
-  border-radius: var(--border-radius);
-  padding: var(--spacing);
+  border-radius: 6px;
+  padding: 6px 4px;
   text-align: center;
 }
 
 .stat-number {
-  font-size: 28px;
+  font-size: 16px;
   font-weight: bold;
   color: var(--accent-primary);
 }
 
 .stat-label {
-  font-size: 14px;
+  font-size: 10px;
   color: var(--text-secondary);
-  margin-top: 5px;
+  margin-top: 2px;
 }
 
 /* Tabs */

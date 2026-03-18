@@ -663,10 +663,6 @@ export function getQueryTabHTML(): string {
     <div id="query" class="tab-content card" role="tabpanel" aria-labelledby="tab-query">
       <h2>🔍 Query Knowledge Graph</h2>
       
-      <div class="query-info-banner" style="background: rgba(0, 212, 255, 0.1); border-left: 3px solid var(--accent-primary); padding: 12px 16px; margin-bottom: 15px; border-radius: 0 8px 8px 0; font-size: 13px;">
-        <strong>💡 Tip:</strong> You can query while files are uploading! Queries may be slower during heavy uploads.
-        Newly uploaded files become searchable after processing completes.
-      </div>
       
       <h3 id="queryModeLabel">Query Mode</h3>
       <div class="radio-group" role="radiogroup" aria-labelledby="queryModeLabel">
