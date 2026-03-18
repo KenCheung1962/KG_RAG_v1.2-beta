@@ -61,45 +61,50 @@ RERANK_CONFIG = RerankConfig()
 rerank_logger = logging.getLogger("reranker")
 
 # =============================================================================
-# EMBEDDING FUNCTION (MiniMax)
+# EMBEDDING FUNCTION (Ollama - nomic-embed-text)
 # =============================================================================
 
-EMBEDDING_DIMENSION = 1024  # MiniMax embedding dimension
+EMBEDDING_DIMENSION = 768  # nomic-embed-text dimension
 
-def get_minimax_embedding(text: str) -> List[float]:
-    """Generate embedding using MiniMax API."""
-    MINIMAX_API_KEY = os.environ.get("MINIMAX_PORTAL_TOKEN", "")
-    MINIMAX_BASE_URL = "https://api.minimax.chat/v1"
-    
-    if not MINIMAX_API_KEY:
-        rerank_logger.error("MiniMax API key not configured for embeddings")
-        return [0.0] * EMBEDDING_DIMENSION
-    
-    url = f"{MINIMAX_BASE_URL}/embeddings"
-    headers = {
-        "Authorization": f"Bearer {MINIMAX_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "embo-01",  # MiniMax embedding model
-        "input": text[:8000]  # Limit text length
-    }
-    
+# Initialize Ollama client for embeddings
+_ollama_client = None
+
+def get_ollama_client():
+    """Get or create Ollama client instance."""
+    global _ollama_client
+    if _ollama_client is None:
+        from ollama_client import OllamaClient
+        _ollama_client = OllamaClient(
+            host=os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434"),
+            model=os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text:latest")
+        )
+    return _ollama_client
+
+def get_ollama_embedding(text: str) -> List[float]:
+    """Generate embedding using local Ollama (nomic-embed-text)."""
     try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=30)
-        if resp.status_code == 200:
-            data = resp.json()
-            embedding = data.get("data", [{}])[0].get("embedding", [])
+        client = get_ollama_client()
+        # Use sync wrapper for async method
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        embeddings = loop.run_until_complete(client.embed([text[:8000]]))  # Limit text length
+        if embeddings and len(embeddings) > 0:
+            embedding = embeddings[0]
             if embedding and len(embedding) == EMBEDDING_DIMENSION:
                 return embedding
             else:
                 rerank_logger.error(f"Invalid embedding dimension: {len(embedding) if embedding else 0}")
                 return [0.0] * EMBEDDING_DIMENSION
         else:
-            rerank_logger.error(f"MiniMax embedding API error: {resp.status_code}")
+            rerank_logger.error("Ollama returned empty embeddings")
             return [0.0] * EMBEDDING_DIMENSION
     except Exception as e:
-        rerank_logger.error(f"MiniMax embedding exception: {e}")
+        rerank_logger.error(f"Ollama embedding exception: {e}")
         return [0.0] * EMBEDDING_DIMENSION
 
 # =============================================================================
@@ -173,7 +178,7 @@ async def rerank_chunks(
         return chunks[:final_k]
     
     # Generate query embedding once
-    query_embedding = get_minimax_embedding(query)
+    query_embedding = get_ollama_embedding(query)
     
     scored_chunks = []
     
@@ -270,7 +275,7 @@ async def search_chunks_vector(
     """
     try:
         # Generate query embedding
-        query_embedding = get_minimax_embedding(query)
+        query_embedding = get_ollama_embedding(query)
         
         # Use the storage's vector search
         from storage import DistanceMetric
@@ -729,15 +734,19 @@ async def upload_document(
         # Split into chunks with overlap for better context
         chunks = create_chunks(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
         
-        # Store chunks
+        # Store chunks with embeddings
         chunks_created = 0
         for i, chunk_text in enumerate(chunks):
+            # Generate embedding for this chunk
+            embedding = get_ollama_embedding(chunk_text)
+            
             chunk = Chunk(
                 chunk_id=f"{doc_id}_{i}",
                 entity_id=doc_id,
                 content=chunk_text,
                 source=filename,
                 chunk_index=i,
+                embedding=embedding,  # Now includes 768d embedding
                 metadata={"filename": filename, "index": i}
             )
             try:
@@ -823,15 +832,19 @@ async def upload_document_json(request: Request):
         # Split into chunks with overlap for better context
         chunks = create_chunks(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
         
-        # Store chunks
+        # Store chunks with embeddings
         chunks_created = 0
         for i, chunk_text in enumerate(chunks):
+            # Generate embedding for this chunk
+            embedding = get_ollama_embedding(chunk_text)
+            
             chunk = Chunk(
                 chunk_id=f"{doc_id}_{i}",
                 entity_id=doc_id,
                 content=chunk_text,
                 source=filename,
                 chunk_index=i,
+                embedding=embedding,  # Now includes 768d embedding
                 metadata={"filename": filename, "index": i}
             )
             try:
@@ -998,12 +1011,16 @@ async def upload_folder(folder_path: str = Form(...)):
                         chunks = create_chunks(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
                         
                         for i, chunk_text in enumerate(chunks):
+                            # Generate embedding for this chunk
+                            embedding = get_ollama_embedding(chunk_text)
+                            
                             chunk = Chunk(
                                 chunk_id=f"{doc_id}_{i}",
                                 entity_id=doc_id,
                                 content=chunk_text,
                                 source=filename,
                                 chunk_index=i,
+                                embedding=embedding,  # Now includes 768d embedding
                                 metadata={"filename": filename, "path": filepath, "index": i}
                             )
                             try:
@@ -1080,12 +1097,16 @@ async def process_single_file(filepath: str, filename: str, skip_existing: bool 
         chunks = create_chunks(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP)
         
         for i, chunk_text in enumerate(chunks):
+            # Generate embedding for this chunk
+            embedding = get_ollama_embedding(chunk_text)
+            
             chunk = Chunk(
                 chunk_id=f"{doc_id}_{i}",
                 entity_id=doc_id,
                 content=chunk_text,
                 source=filename,
                 chunk_index=i,
+                embedding=embedding,  # Now includes 768d embedding
                 metadata={"filename": filename, "path": filepath, "index": i}
             )
             try:
@@ -1657,7 +1678,7 @@ async def chat(request: dict):
     # =================================================================
     
     # Generate query embedding
-    query_embedding = get_minimax_embedding(query)
+    query_embedding = get_ollama_embedding(query)
     
     # Fetch more chunks than needed for reranking
     initial_k = RERANK_CONFIG.initial_top_k if use_rerank else requested_top_k
@@ -2490,7 +2511,7 @@ async def chat_with_doc(request: dict):
                 # Second try: Vector search for better relevance (optional enhancement)
                 if len(all_results) < 5:
                     try:
-                        query_embedding = get_minimax_embedding(message)
+                        query_embedding = get_ollama_embedding(message)
                         from storage import DistanceMetric
                         
                         vector_results = await storage.search_chunks(
@@ -2518,7 +2539,7 @@ async def chat_with_doc(request: dict):
         
         # Step 2: ALSO search ENTIRE DATABASE (always do this, not just fallback)
         try:
-            query_embedding = get_minimax_embedding(message)
+            query_embedding = get_ollama_embedding(message)
             from storage import DistanceMetric
             
             # Calculate how many more chunks we need
