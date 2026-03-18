@@ -161,9 +161,14 @@ function handleClearFiles(): void {
 /**
  * Check for duplicates
  */
-export async function checkDuplicates(files: File[]): Promise<{ duplicates: string[]; newFiles: File[] }> {
+export async function checkDuplicates(files: File[]): Promise<{ 
+  duplicates: string[]; 
+  newFiles: File[];
+  duplicateDocIds?: Map<string, string>;  // filename -> doc_id mapping
+}> {
   const existingDocs = await fetchDocuments(1000);
   const existingNames = new Set(existingDocs.map(d => d.filename));
+  const existingDocMap = new Map(existingDocs.map(d => [d.filename, d.doc_id]));
   
   const duplicates: string[] = [];
   const newFiles: File[] = [];
@@ -176,7 +181,16 @@ export async function checkDuplicates(files: File[]): Promise<{ duplicates: stri
     }
   }
   
-  return { duplicates, newFiles };
+  // Build map of duplicate filenames to their doc_ids
+  const duplicateDocIds = new Map<string, string>();
+  for (const dupName of duplicates) {
+    const docId = existingDocMap.get(dupName);
+    if (docId) {
+      duplicateDocIds.set(dupName, docId);
+    }
+  }
+  
+  return { duplicates, newFiles, duplicateDocIds };
 }
 
 /**

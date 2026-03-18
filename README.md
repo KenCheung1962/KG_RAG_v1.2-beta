@@ -57,6 +57,11 @@ npm run dev
 - **Chat with Files**: `POST /api/v1/chat/with-doc`
 - **Health Check**: `GET /health`
 
+### Metadata Extractor (metadata_extractor.py)
+- **Extract bibliographic metadata** from PDF, HTML, TXT files
+- **APA 7th edition formatting** for references
+- **Usage**: `from metadata_extractor import MetadataExtractor, format_apa_reference`
+
 ### Frontend
 - **Query Tab**: `frontend/src/components/tabs/QueryTab.ts`
 - **Query + File Tab**: `frontend/src/components/tabs/QueryFileTab.ts`
@@ -75,8 +80,12 @@ npm run dev
 - Lists source documents used to generate the answer
 - Supports print functionality
 
-### Backend Enhancements
+### Backend Enhancements ✅
 - Returns actual source filenames instead of just counts
+- **APA 7th Edition Metadata Extractor** (`backend/metadata_extractor.py`)
+  - Extracts author, year, title, DOI from PDF/HTML/TXT
+  - Formats references in APA style
+  - Falls back to filename if metadata unavailable
 - Bibliographic metadata extraction support (documented in `docs/backend-bibliographic-enhancement.md`)
 
 ## Environment Variables

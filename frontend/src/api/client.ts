@@ -235,10 +235,8 @@ export async function sendQuery(
     // Set max_tokens based on mode to prevent truncation
     // Higher limits for comprehensive modes to ensure complete responses
     max_tokens: isUltra ? 8192 : (isComprehensive ? 8192 : 4096),
-    // Enhanced message
-    message: isComprehensive || isUltra
-      ? request.message 
-      : `${request.message}\n\nPlease provide a comprehensive answer with detailed explanations, specific examples from the context, and insights about relationships between concepts.`
+    // Use the user's message exactly as provided
+    message: request.message
   };
   
   // Extended timeout based on mode
@@ -285,9 +283,8 @@ export async function sendQueryWithFiles(
     temperature: isUltra ? 0.4 : (isComprehensive ? 0.3 : 0.3),
     // Set max_tokens to prevent truncation
     max_tokens: isUltra ? 8192 : (isComprehensive ? 8192 : 4096),
-    message: isUltra || isComprehensive
-      ? request.message 
-      : `${request.message}\n\nPlease provide a comprehensive answer with detailed explanations and specific examples.`
+    // Use the user's message exactly as provided
+    message: request.message
   };
   
   // Set timeout based on mode

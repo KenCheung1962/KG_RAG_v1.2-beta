@@ -8,6 +8,7 @@ import { showProgress, hideProgress, setProgressStatus } from '@/components/Prog
 import { getElement, setVisible } from '@/utils/dom';
 import { checkDuplicates } from './IngestTab';
 import { escapeHtml, exponentialBackoff } from '@/utils/helpers';
+import { formatQueryResponse } from './QueryTab';
 import {
   getSelectedQueryFiles, addSelectedQueryFile, removeSelectedQueryFile,
   clearSelectedQueryFiles, setIsQuerying
@@ -89,6 +90,8 @@ function printAnswer(event?: Event): void {
     .replace(/^# (.+)$/gm, '<div class="h1-bold">$1</div>')
     // Convert ## text to bold h2 style
     .replace(/^## (.+)$/gm, '<div class="h2-bold">$1</div>')
+    // Convert ### text to bold h3 style
+    .replace(/^### (.+)$/gm, '<div class="h3-bold">$1</div>')
     .replace(/\n/g, '<br>');
 
   const html = `<!DOCTYPE html>
@@ -138,6 +141,13 @@ function printAnswer(event?: Event): void {
         margin-bottom: 0.3cm;
         color: #333;
       }
+      .h3-bold { 
+        font-size: 12pt; 
+        font-weight: bold; 
+        margin-top: 0.5cm; 
+        margin-bottom: 0.2cm;
+        color: #555;
+      }
       strong { font-weight: bold; }
     }
     @media screen {
@@ -175,6 +185,13 @@ function printAnswer(event?: Event): void {
         margin-top: 15px; 
         margin-bottom: 8px;
         color: #333;
+      }
+      .h3-bold { 
+        font-size: 14pt; 
+        font-weight: bold; 
+        margin-top: 12px; 
+        margin-bottom: 6px;
+        color: #444;
       }
       strong { font-weight: bold; }
     }
@@ -241,7 +258,15 @@ function renderQueryFiles(): void {
 /**
  * Query database only (no files)
  */
-async function queryDatabaseOnly(queryText: string, detail = getQueryFileDetail()): Promise<string> {
+/**
+ * Query database only (no files)
+ */
+async function queryDatabaseOnly(
+  queryText: string, 
+  detail = getQueryFileDetail(),
+  answerDiv?: HTMLElement | null,
+  exportBtn?: HTMLButtonElement | null
+): Promise<void> {
   const { sendQuery } = await import('@/api');
   const controller = new AbortController();
   
@@ -258,15 +283,110 @@ async function queryDatabaseOnly(queryText: string, detail = getQueryFileDetail(
       ultra_comprehensive: detail.ultra_comprehensive
     }, controller.signal);
     clearTimeout(timeoutId);
+    
     const responseText = result.response || result.answer || JSON.stringify(result);
     lastAnswerText = responseText;
-    return responseText;
+    
+    // Use innerHTML with formatQueryResponse for proper formatting
+    if (answerDiv) {
+      answerDiv.innerHTML = formatQueryResponse(responseText);
+    }
+    
+    // Show print button
+    if (exportBtn) {
+      exportBtn.style.display = 'inline-block';
+    }
   } catch (error) {
     clearTimeout(timeoutId);
     if (error instanceof Error && error.name === 'AbortError') {
-      return '⏰ Query timed out. The LLM is taking too long.';
+      if (answerDiv) answerDiv.textContent = '⏰ Query timed out. The LLM is taking too long.';
+    } else {
+      if (answerDiv) answerDiv.textContent = `❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
     }
-    return `❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
+  }
+}
+
+/**
+ * Query with existing (already uploaded) files + database
+ */
+async function queryWithExistingFiles(
+  queryText: string,
+  filenames: string[],
+  detail = getQueryFileDetail(),
+  answerDiv?: HTMLElement | null,
+  exportBtn?: HTMLButtonElement | null
+): Promise<void> {
+  const controller = new AbortController();
+  
+  // Set timeout based on mode
+  const isUltra = detail.ultra_comprehensive;
+  const timeoutMs = isUltra ? 600000 : (detail.detailed ? 300000 : 180000);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    if (answerDiv) {
+      answerDiv.innerHTML = `<span class="spinner"></span> <strong>${detail.label} Mode</strong><br>Querying with ${filenames.length} existing file(s)...`;
+    }
+    
+    const result = await sendQueryWithFiles({ 
+      message: queryText,
+      filenames,
+      top_k: detail.top_k,
+      detailed: detail.detailed,
+      ultra_comprehensive: detail.ultra_comprehensive
+    }, controller.signal);
+    
+    clearTimeout(timeoutId);
+    
+    if (result.response || result.answer) {
+      const responseText = result.response || result.answer || '';
+      
+      // Store sources and build answer with references for printing
+      const sources = result.sources || result.source_documents;
+      if (Array.isArray(sources)) {
+        lastSources = sources.map((s: unknown): string => {
+          if (typeof s === 'string') return s;
+          if (s && typeof s === 'object') {
+            return ((s as Record<string, unknown>).filename as string) || 
+                   ((s as Record<string, unknown>).doc_id as string) || 
+                   ((s as Record<string, unknown>).name as string) || 
+                   JSON.stringify(s);
+          }
+          return String(s);
+        });
+      } else {
+        lastSources = [];
+      }
+      
+      // Build answer with reference section for print output
+      let answerWithRefs = responseText;
+      if (lastSources.length > 0) {
+        answerWithRefs += '\n\n\n## References\n\n';
+        lastSources.forEach((src, idx) => {
+          answerWithRefs += `${idx + 1}. ${src}\n`;
+        });
+      }
+      lastAnswerText = answerWithRefs;
+      
+      // Display with proper formatting
+      if (answerDiv) {
+        answerDiv.innerHTML = formatQueryResponse(answerWithRefs);
+      }
+      if (exportBtn) {
+        exportBtn.style.display = 'inline-block';
+      }
+    } else if (result.detail) {
+      if (answerDiv) answerDiv.textContent = `❌ Error: ${result.detail}`;
+    } else {
+      if (answerDiv) answerDiv.textContent = JSON.stringify(result, null, 2);
+    }
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof Error && error.name === 'AbortError') {
+      if (answerDiv) answerDiv.textContent = '⏰ Query timed out after 5 minutes.';
+    } else {
+      if (answerDiv) answerDiv.textContent = `❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    }
   }
 }
 
@@ -306,17 +426,16 @@ async function handleRunQueryWithFile(): Promise<void> {
   
   try {
     // Check for duplicates
-    const { duplicates, newFiles } = await checkDuplicates(files);
+    const { duplicates, newFiles, duplicateDocIds } = await checkDuplicates(files);
     
     if (duplicates.length > 0) {
       if (files.length === 1) {
-        const action = confirm(`File "${escapeHtml(duplicates[0])}" already exists. Click OK to overwrite, Cancel to skip.`);
+        const action = confirm(`File "${escapeHtml(duplicates[0])}" already exists. Click OK to overwrite, Cancel to use existing file.`);
         if (!action) {
-          answerDiv!.innerHTML = `<span class="spinner"></span> <strong>${detail.label} Mode</strong><br>⏭️ Skipped file. Searching database...`;
+          // User chose to skip upload - query with the existing file
+          answerDiv!.innerHTML = `<span class="spinner"></span> <strong>${detail.label} Mode</strong><br>📄 Using existing file...`;
           clearSelectedQueryFiles();
-          const result = await queryDatabaseOnly(queryText, detail);
-          answerDiv!.textContent = result;
-          if (exportBtn) exportBtn.style.display = 'inline-block';
+          await queryWithExistingFiles(queryText, duplicates, detail, answerDiv, exportBtn);
           setIsQuerying(false);
           return;
         }
@@ -325,28 +444,28 @@ async function handleRunQueryWithFile(): Promise<void> {
         const newList = escapeHtml(newFiles.map(f => f.name).join(', '));
         
         const action = newFiles.length > 0
-          ? confirm(`Found ${duplicates.length} existing: ${dupList}\n\nNew: ${newList}\n\nClick OK to upload all, Cancel to skip duplicates.`)
-          : confirm(`All ${duplicates.length} exist: ${dupList}\n\nClick OK to overwrite all, Cancel to skip.`);
+          ? confirm(`Found ${duplicates.length} existing: ${dupList}\n\nNew: ${newList}\n\nClick OK to upload all, Cancel to skip duplicates and use existing files.`)
+          : confirm(`All ${duplicates.length} exist: ${dupList}\n\nClick OK to overwrite all, Cancel to use existing files.`);
         
         if (!action) {
           if (newFiles.length === 0) {
-            answerDiv!.innerHTML = `<span class="spinner"></span> <strong>${detail.label} Mode</strong><br>⏭️ Skipped all files. Searching database...`;
+            // All files exist, user wants to use existing files
+            answerDiv!.innerHTML = `<span class="spinner"></span> <strong>${detail.label} Mode</strong><br>📄 Using ${duplicates.length} existing file(s)...`;
             clearSelectedQueryFiles();
-            const result = await queryDatabaseOnly(queryText, detail);
-            answerDiv!.textContent = result;
-            if (exportBtn) exportBtn.style.display = 'inline-block';
+            await queryWithExistingFiles(queryText, duplicates, detail, answerDiv, exportBtn);
             setIsQuerying(false);
             return;
           }
+          // Some new, some existing - user wants to skip duplicates, only upload new ones
           files = newFiles;
+          // We'll still query with all files (new + existing duplicates) after upload
         }
       }
     }
     
-    if (files.length === 0) {
-      const result = await queryDatabaseOnly(queryText, detail);
-      answerDiv!.textContent = result;
-      if (exportBtn) exportBtn.style.display = 'inline-block';
+    if (files.length === 0 && duplicates.length === 0) {
+      // No files at all - query database only
+      await queryDatabaseOnly(queryText, detail, answerDiv, exportBtn);
       setIsQuerying(false);
       return;
     }
@@ -377,8 +496,13 @@ async function handleRunQueryWithFile(): Promise<void> {
     // Wait for indexing
     await waitForIndexing(uploadedDocs, answerDiv!);
     
-    // Query with files
-    const filenames = uploadedDocs.map(d => d.filename);
+    // Query with files (including both newly uploaded and existing duplicates if user skipped them)
+    const uploadedFilenames = uploadedDocs.map(d => d.filename);
+    // If user skipped duplicates, include them in the query
+    const skippedDuplicates = (duplicateDocIds && files.length < getSelectedQueryFiles().length) 
+      ? duplicates.filter(d => !uploadedFilenames.includes(d))
+      : [];
+    const filenames = [...uploadedFilenames, ...skippedDuplicates];
     answerDiv!.innerHTML = `<span class="spinner"></span> <strong>${detail.label} Mode</strong><br>Querying with ${filenames.length} file(s)...`;
     
     const controller = new AbortController();
@@ -404,13 +528,13 @@ async function handleRunQueryWithFile(): Promise<void> {
       console.log('[QueryFile] Raw sources:', sources);
       if (Array.isArray(sources)) {
         // Handle both string array and object array
-        lastSources = sources.map(s => {
+        lastSources = sources.map((s: unknown): string => {
           if (typeof s === 'string') return s;
           // If source is an object with filename or doc_id, extract it
           if (s && typeof s === 'object') {
-            return (s as Record<string, unknown>).filename || 
-                   (s as Record<string, unknown>).doc_id || 
-                   (s as Record<string, unknown>).name || 
+            return ((s as Record<string, unknown>).filename as string) || 
+                   ((s as Record<string, unknown>).doc_id as string) || 
+                   ((s as Record<string, unknown>).name as string) || 
                    JSON.stringify(s);
           }
           return String(s);
@@ -436,8 +560,8 @@ async function handleRunQueryWithFile(): Promise<void> {
       }
       lastAnswerText = answerWithRefs;
       
-      // Display answer with references in UI
-      answerDiv!.textContent = answerWithRefs;
+      // Display answer with references in UI (formatted with HTML)
+      answerDiv!.innerHTML = formatQueryResponse(answerWithRefs);
       if (exportBtn) {
         exportBtn.style.display = 'inline-block';
         console.log('[QueryFile] Button shown');

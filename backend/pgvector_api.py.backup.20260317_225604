@@ -21,15 +21,6 @@ import time
 import re
 import numpy as np
 from dataclasses import dataclass
-from io import BytesIO
-
-# PDF text extraction
-try:
-    from PyPDF2 import PdfReader
-    PDF_SUPPORT = True
-except ImportError:
-    PDF_SUPPORT = False
-    print("[WARNING] PyPDF2 not installed. PDF text extraction will not work.")
 
 sys.path.insert(0, '/Users/ken/clawd_workspace/projects/KG_RAG/proj_ph2/source/postgres')
 
@@ -373,47 +364,6 @@ from storage import create_kg_storage, Entity, Relationship, Chunk
 CHUNK_SIZE = 1000      # Characters per chunk
 CHUNK_OVERLAP = 100    # Overlap between chunks (characters)
 
-def extract_text_from_file(content: bytes, filename: str) -> str:
-    """
-    Extract text from various file formats (PDF, TXT, etc.)
-    Returns extracted text or empty string if extraction fails.
-    """
-    file_lower = filename.lower()
-    
-    # PDF files
-    if file_lower.endswith('.pdf'):
-        if not PDF_SUPPORT:
-            print(f"[WARNING] PDF support not available for {filename}")
-            return ""
-        try:
-            pdf_file = BytesIO(content)
-            reader = PdfReader(pdf_file)
-            text_parts = []
-            for page in reader.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text_parts.append(page_text)
-            extracted = "\n".join(text_parts)
-            print(f"[DEBUG] Extracted {len(extracted)} chars from PDF {filename}")
-            return extracted
-        except Exception as e:
-            print(f"[ERROR] PDF extraction failed for {filename}: {e}")
-            return ""
-    
-    # Text files - try UTF-8 first
-    try:
-        return content.decode('utf-8')
-    except UnicodeDecodeError:
-        # Try other encodings
-        for encoding in ['latin-1', 'cp1252', 'iso-8859-1']:
-            try:
-                return content.decode(encoding)
-            except UnicodeDecodeError:
-                continue
-    
-    # Last resort - ignore errors
-    return content.decode('utf-8', errors='ignore')
-
 def create_chunks(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
     """
     Split text into overlapping chunks.
@@ -690,17 +640,7 @@ async def upload_document(
     try:
         content = await file.read()
         file_size = len(content)
-        
-        # Extract text based on file type (PDF, TXT, etc.)
-        text = extract_text_from_file(content, filename)
-        
-        if not text or len(text.strip()) < 50:
-            log_upload_failure(filename, "Could not extract readable text from file", file_size)
-            return {
-                "success": False,
-                "error": "Could not extract readable text from file. For PDFs, ensure they are text-based (not scanned images).",
-                "doc_id": None
-            }
+        text = content.decode('utf-8', errors='ignore')
         
         # Create doc_id from filename
         doc_id = hashlib.md5(filename.encode()).hexdigest()[:12]
@@ -777,24 +717,11 @@ async def upload_document_json(request: Request):
         # Decode base64 if provided
         if content:
             try:
-                # Try to decode as base64 (for binary files like PDFs)
-                binary_content = base64.b64decode(content)
-                # Extract text based on file type
-                text = extract_text_from_file(binary_content, filename)
-            except Exception as e:
-                # If decoding fails, treat as plain text
-                print(f"[DEBUG] Base64 decode failed, treating as plain text: {e}")
-                text = content if isinstance(content, str) else content.decode('utf-8', errors='ignore')
+                text = base64.b64decode(content).decode('utf-8', errors='ignore')
+            except:
+                text = content
         else:
             text = ""
-        
-        if not text or len(text.strip()) < 50:
-            log_upload_failure(filename, "Could not extract readable text from file", file_size)
-            return {
-                "success": False,
-                "error": "Could not extract readable text from file. For PDFs, ensure they are text-based (not scanned images).",
-                "doc_id": None
-            }
         
         # Create doc_id from filename
         doc_id = hashlib.md5(filename.encode()).hexdigest()[:12]
@@ -1493,55 +1420,105 @@ Your conclusion should:
     
     return full_response
 
-def is_source_relevant(source: str, query: str) -> tuple:
+def is_source_relevant(source: str, query: str) -> bool:
     """
-    STRICT check: Source filename MUST contain relevant technical keywords.
-    Uses same logic as is_source_filename_relevant for consistency.
+    Check if a source filename is relevant to the query.
+    Returns True if source likely contains relevant content.
     """
-    # Delegate to the stricter function
-    return is_source_filename_relevant(source, query)
-
-
-def is_chunk_content_relevant(content: str, query: str, min_matches: int = 1) -> tuple:
-    """
-    LENIENT check: Chunk content should contain keywords from query.
-    Vector search already found this chunk by semantic similarity,
-    so we trust it unless there's a clear mismatch.
+    import re
     
-    Returns (is_relevant, match_count, matched_terms)
+    # Extract keywords from query (remove common words)
+    query_lower = query.lower()
+    stop_words = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+                  'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+                  'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare',
+                  'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as',
+                  'and', 'or', 'how', 'what', 'why', 'when', 'where', 'who', 'which',
+                  'this', 'that', 'these', 'those', 'my', 'your', 'his', 'her', 'its',
+                  'our', 'their', 'me', 'you', 'him', 'her', 'us', 'them', 'it', 'i'}
+    
+    # Extract keywords from query
+    query_words = set()
+    for word in re.findall(r'[a-zA-Z]+', query_lower):
+        if len(word) > 3 and word not in stop_words:
+            query_words.add(word)
+    
+    # Check if any query keyword appears in source filename
+    source_lower = source.lower()
+    matches = []
+    for word in query_words:
+        if word in source_lower:
+            matches.append(word)
+    
+    # Source is relevant if it matches at least one keyword
+    # OR if it's a technical/engineering document
+    relevant_extensions = ['.pdf', '.txt', '.html', '.doc', '.docx']
+    is_relevant = len(matches) > 0 or any(source_lower.endswith(ext) for ext in relevant_extensions)
+    
+    return is_relevant, matches
+
+
+def is_chunk_content_relevant(content: str, query: str, min_matches: int = 3) -> bool:
+    """
+    STRICT Check if chunk content actually contains relevant keywords from query.
+    Returns True ONLY if content has specific technical terms matching the query.
     """
     import re
     
     if not content or not query:
-        return True, 0, []  # Be lenient - trust vector search
+        return False, 0, []
     
     query_lower = query.lower()
     content_lower = content.lower()
     
-    # Extract ALL keywords from query (3+ chars) - dynamic, no predefined lists
+    # Define CRITICAL technical terms that MUST be present for relevance
+    # These are compound terms or specific technical keywords
+    critical_terms = []
+    
+    # Packaging/semiconductor related
+    if any(term in query_lower for term in ['packaging', 'cowos', 'hbm', 'chip', 'die', 'wafer', 'semiconductor']):
+        critical_terms.extend(['packaging', 'cowos', 'hbm', 'chip', 'die', 'wafer', 'semiconductor', 
+                               'interposer', 'tsv', 'bump', 'solder', 'substrate', 'bonding'])
+    
+    # Bonding specific
+    if 'bonding' in query_lower:
+        critical_terms.extend(['bonding', 'hybrid', 'thermal', 'compression', 'fusion', 
+                               'dielectric', 'copper', 'pad', 'interface'])
+    
+    # Add query-specific terms (4+ chars)
     query_terms = set()
     for word in re.findall(r'[a-zA-Z]+', query_lower):
-        word = word.lower()
-        if len(word) >= 3:
+        if len(word) >= 4 and word not in {'the', 'this', 'that', 'with', 'from', 'have', 'been'}:
             query_terms.add(word)
+    
+    # Combine and prioritize
+    all_critical = set(critical_terms) | query_terms
     
     # Check for matches
     matches = 0
     matched_terms = []
     
-    for term in query_terms:
+    for term in all_critical:
         if term in content_lower:
-            matches += 1
+            # Give higher weight to compound/specific terms
+            if len(term) >= 6:  # Longer terms are more specific
+                matches += 3
+            else:
+                matches += 1
             matched_terms.append(term)
     
-    # LENIENT: Accept if at least 1 query term matches, OR accept anyway
-    # Vector search already confirmed semantic similarity
+    # STRICT: Must match at least 2 different critical terms
+    # This prevents generic matches like "analysis" or "design"
     unique_matches = len(matched_terms)
-    is_relevant = unique_matches >= min_matches
+    is_relevant = unique_matches >= 2 and matches >= min_matches
     
-    # Debug logging only when rejected
+    # Log filtering for debugging
+    source_name = content[:50]  # Preview for logging
     if not is_relevant:
-        print(f"[FILTER] Content has {unique_matches} matches for: {list(query_terms)[:5]}")
+        print(f"[FILTER] Content rejected - only {unique_matches} unique matches: {matched_terms}")
+        print(f"[FILTER] Required terms: {list(all_critical)[:10]}")
+    else:
+        print(f"[PASS] Content accepted with {unique_matches} matches: {matched_terms}")
     
     return is_relevant, matches, matched_terms
 
@@ -1587,40 +1564,48 @@ def validate_and_fix_citations(response: str, sources: list) -> tuple:
     return response, warnings
 
 
-def is_source_filename_relevant(source: str, query: str) -> tuple:
+def is_source_filename_relevant(source: str, query: str) -> bool:
     """
-    LENIENT check: Source filename should contain keywords from query.
-    Vector search already found this chunk by semantic similarity,
-    so we only do a lightweight sanity check here.
+    STRICT check: Source filename MUST contain at least one query keyword.
+    This filters out completely unrelated documents.
     """
     import re
     
     if not source or not query:
-        return True, None  # Be lenient - trust vector search
+        return False
     
     source_lower = source.lower()
     query_lower = query.lower()
     
-    # Extract ALL keywords from query (3+ chars) - no predefined lists
+    # Extract meaningful keywords from query (4+ chars)
     query_keywords = set()
     for word in re.findall(r'[a-zA-Z]+', query_lower):
-        word = word.lower()
-        if len(word) >= 3:
+        if len(word) >= 4 and word not in {'that', 'this', 'with', 'from', 'have', 'been', 'they', 'will', 'would', 'should'}:
+            query_keywords.add(word)
+    
+    # Also add important 3-char terms
+    for word in re.findall(r'[a-zA-Z]+', query_lower):
+        if len(word) == 3 and word not in {'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'had', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'man', 'new', 'now', 'old', 'see', 'two', 'way', 'who', 'boy', 'did', 'its', 'let', 'put', 'say', 'she', 'too', 'use'}:
             query_keywords.add(word)
     
     # Check if ANY keyword appears in filename
-    matched_keywords = []
     for keyword in query_keywords:
         if keyword in source_lower:
-            matched_keywords.append(keyword)
+            return True, keyword
     
-    # LENIENT: If at least 1 query keyword matches filename, it's relevant
-    # If no keywords match, still accept it (vector search found it for a reason)
-    if matched_keywords:
-        return True, matched_keywords[0]
+    # Check for domain-specific terms in filename
+    packaging_terms = ['package', 'packaging', 'chip', 'die', 'wafer', 'semiconductor', 'hbm', 'cowos', 'interposer', 'tsv', 'bump', 'solder', 'substrate', 'dielectric', 'copper', 'pad', ' interconnect', 'microbump', 'heterogeneous', 'integration']
+    bonding_terms = ['bond', 'bonding', 'hybrid', 'thermal', 'compression', 'fusion', 'direct', 'dielectric', 'copper', 'pad', 'interface']
     
-    # No filename match, but still accept - content might be relevant
-    return True, None
+    all_terms = packaging_terms + bonding_terms
+    
+    for term in all_terms:
+        if term in source_lower:
+            return True, term
+    
+    # REJECT if no match
+    print(f"[FILENAME FILTER] REJECTED: '{source}' - no keywords match query: {query_keywords}")
+    return False, None
 
 
 # ============ Chat ============
@@ -1779,16 +1764,18 @@ async def chat(request: dict):
         if box_count > 0 and box_count / len(content) > 0.3:
             continue
         
-        # Check relevance - filename OR content must match (lenient: trust vector search)
+        # NEW: STRICT Filename check - source filename MUST contain query keywords
         filename_rel, matched_keyword = is_source_filename_relevant(source, query)
-        content_rel, match_count, matched_terms = is_chunk_content_relevant(content, query, min_matches=1)
-        
-        if filename_rel:
-            print(f"[FILTER] PASSED: '{source}' - filename matched: '{matched_keyword}'")
-        elif content_rel:
-            print(f"[FILTER] PASSED: '{source}' - content matched: {matched_terms}")
+        if not filename_rel:
+            print(f"[FILENAME FILTER] REJECTED: '{source}' - no query keywords in filename")
+            continue
         else:
-            print(f"[FILTER] REJECTED: '{source}' - no filename or content match")
+            print(f"[FILENAME FILTER] PASSED: '{source}' - matched keyword: '{matched_keyword}'")
+        
+        # NEW: STRICT Content check
+        is_rel, match_count, matched_terms = is_chunk_content_relevant(content, query, min_matches=3)
+        if not is_rel:
+            print(f"[CONTENT FILTER] REJECTED chunk from '{source}'")
             continue
         
         # Preserve all metadata including rerank scores
@@ -1800,29 +1787,11 @@ async def chat(request: dict):
         print(f"[FILTER SUMMARY] Filtered out {filtered_count}/{len(result)} chunks as irrelevant")
         print(f"[FILTER SUMMARY] Keeping {len(filtered_result)} relevant chunks")
     
-    # If no relevant chunks after filtering, generate from LLM knowledge
+    # Use filtered results
     if not filtered_result:
-        print(f"[INFO] No relevant chunks after filtering. Generating answer from LLM knowledge...")
-        try:
-            fallback_response = await generate_llm_knowledge_response(query)
-            if fallback_response:
-                return {
-                    "response": fallback_response,
-                    "answer": fallback_response,
-                    "sources": [],
-                    "confidence": 0.7,
-                    "retrieval_info": {
-                        "method": "llm_knowledge_only",
-                        "note": f"Vector search returned {len(result)} chunks but none passed relevance filtering. Answer generated from LLM pre-trained knowledge."
-                    }
-                }
-        except Exception as e:
-            print(f"[ERROR] LLM knowledge generation failed: {e}")
-        
-        # Ultimate fallback if LLM knowledge also fails
         return {
-            "response": f"I couldn't find any relevant information about '{query}' in the knowledge base, and the AI knowledge generation is currently unavailable. Please try:\n\n1. Upload relevant documents about this topic\n2. Try a different search term\n3. Check your connection to the AI service",
-            "answer": f"I couldn't find any relevant information about '{query}' in the knowledge base, and the AI knowledge generation is currently unavailable. Please try:\n\n1. Upload relevant documents about this topic\n2. Try a different search term\n3. Check your connection to the AI service",
+            "response": f"I couldn't find any clean information related to '{query}'. Please try a different search term or upload relevant documents.",
+            "answer": f"I couldn't find any clean information related to '{query}'. Please try a different search term or upload relevant documents.",
             "context": "",
             "sources": [],
             "confidence": 0.0
@@ -1852,55 +1821,6 @@ async def chat(request: dict):
     context = re.sub(r'│{2,}', '', context)
     context = context.strip()
     
-    # Check if sources are actually relevant BEFORE generating LLM response
-    unique_sources_check = list(set([r.get("source", "unknown") for r in filtered_result]))
-    irrelevant_sources_check = []
-    relevant_sources_check = []
-    for src in unique_sources_check:
-        is_rel, _ = is_source_relevant(src, query)
-        if is_rel:
-            relevant_sources_check.append(src)
-        else:
-            irrelevant_sources_check.append(src)
-    
-    # If ALL sources are irrelevant, skip RAG and use LLM knowledge directly
-    if irrelevant_sources_check and len(irrelevant_sources_check) == len(unique_sources_check):
-        print(f"[WARNING] All {len(unique_sources_check)} sources are irrelevant to query: {query}")
-        print(f"[INFO] Skipping RAG, generating directly from LLM knowledge")
-        try:
-            fallback_response = await generate_llm_knowledge_response(query)
-            if fallback_response:
-                return {
-                    "response": fallback_response,
-                    "answer": fallback_response,
-                    "sources": [],
-                    "confidence": 0.7,
-                    "retrieval_info": {
-                        "method": "llm_knowledge_only",
-                        "note": f"Retrieved {len(filtered_result)} chunks but source relevance check failed. Answer generated from LLM pre-trained knowledge."
-                    }
-                }
-        except Exception as e:
-            print(f"[ERROR] LLM knowledge generation failed: {e}")
-    else:
-        if irrelevant_sources_check:
-            print(f"[INFO] Filtered out {len(irrelevant_sources_check)} irrelevant sources, keeping {len(relevant_sources_check)} relevant ones")
-            # Filter filtered_result to only keep relevant sources
-            filtered_result = [r for r in filtered_result if r.get('source') in relevant_sources_check]
-            # Rebuild context with only relevant sources
-            source_legend = "SOURCE LEGEND (Use ONLY these source numbers in citations):\n"
-            for i, r in enumerate(filtered_result):
-                source = r.get("source", "unknown")
-                source_legend += f"Source {i+1}: {source}\n"
-            source_legend += "\n---\n\n"
-            context_parts = []
-            for i, r in enumerate(filtered_result):
-                content = r.get("content", "")
-                source = r.get("source", "unknown")
-                score = r.get("rerank_score", r.get("similarity", 0))
-                context_parts.append(f"[Source {i+1}: {source} | Relevance: {score:.2f}]\n{content}")
-            context = source_legend + "\n\n---\n\n".join(context_parts)
-    
     # Try to generate LLM response - run in separate thread with its own event loop
     try:
         import concurrent.futures
@@ -1926,9 +1846,6 @@ async def chat(request: dict):
                 # Create new event loop for this thread
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                
-                # Check if we have no relevant sources (from outer scope)
-                has_relevant_sources = len(filtered_result) > 0
                 
                 async def get_response():
                     # Check query mode from request parameters (not keywords in query)
@@ -1969,14 +1886,12 @@ Retrieved Context from Knowledge Base (use as foundation, expand with your knowl
 
 **FORMAT REQUIREMENTS - READ CAREFULLY**:
 1. **SINGLE COLUMN ONLY**: Write in plain, single-column text. NEVER use multi-column layouts.
-2. **MATH FORMATTING**: Use Unicode mathematical symbols (e.g., |ψ⟩, α, β, ≤, ≥, →) for equations:
-   - GOOD: |ψ⟩ = α|0⟩ + β|1⟩ (no tabs, single spaces only)
-   - BAD: H   |0⟩ or (  |0⟩ +  |1⟩ ) - never use tabs or multiple spaces
-   - BAD: LaTeX code like $\psi$
-   - Keep equations on a SINGLE LINE - never break them with newlines
-   - Use SINGLE spaces only: H|0⟩ = (|0⟩ + |1⟩)/√2
-   - Use words to explain complex formulas before showing them
-3. **SINGLE-LINE EQUATIONS**: All equations must be complete on one line. Never split equations across multiple lines. Never use tabs in equations.
+2. **NO LATEX MATH**: All mathematical equations and formulas MUST be written in readable plain English text, NOT LaTeX code.
+   - BAD: \\[ \\mathcal{{L}}_Q(\\theta) = \\mathbb{{E}}... \\]
+   - GOOD: "The loss function L_Q is defined as the expected value of..."
+   - BAD: $\\alpha + \\beta = \\gamma$
+   - GOOD: "alpha plus beta equals gamma"
+3. **DESCRIBE FORMULAS**: When presenting mathematical concepts, describe them in words rather than showing raw equations.
 4. **ASCII-FRIENDLY**: Use only standard keyboard characters. Avoid special mathematical symbols.
 
 **STRUCTURE** (mandatory - use ALL levels, but COMPLETE THE FULL RESPONSE):
@@ -2064,14 +1979,13 @@ CRITICAL REQUIREMENTS:
 3. Provide substantive content with good depth - not too brief, not too long
 4. Use 3-4 well-developed sections after the summary
 5. Include specific examples and explanations to reach the word count
-6. **MATH FORMATTING**: Use Unicode mathematical symbols for equations:
-   - GOOD: |ψ⟩ = α|0⟩ + β|1⟩ (single spaces only, no tabs)
-   - BAD: H   |0⟩ or (  |0⟩ +  |1⟩ ) - never use tabs or multiple spaces
-   - BAD: LaTeX code like $\psi$
-   - Keep equations on a SINGLE LINE - never break them
-7. Describe complex formulas in words, then show the equation on one line"""
+6. **NO LATEX MATH**: Describe all mathematical concepts in plain English words
+   - BAD: \\[ J(\\pi) = \\mathbb{{E}}... \\] or $\\gamma^t$
+   - GOOD: "The objective function J of pi equals the expected value of..."
+   - GOOD: "gamma raised to the power of t"
+7. Use readable text descriptions instead of mathematical symbols"""
 
-                        system_prompt = "You are a helpful assistant. Provide balanced, substantive answers that start with a clear title and executive summary. Aim for about 1000 words with good depth and examples. Use Unicode math symbols (e.g., |ψ⟩, α, β) for equations. Keep all equations on a single line."
+                        system_prompt = "You are a helpful assistant. Provide balanced, substantive answers that start with a clear title and executive summary. Aim for about 1000 words with good depth and examples. Describe mathematical concepts in plain English words, NEVER use LaTeX code."
                         max_tokens = 2000  # Increased for 1000 words
                         temperature = 0.3
 
@@ -2174,8 +2088,28 @@ CRITICAL REQUIREMENTS:
             unique_sources = list(set([r.get("source", "unknown") for r in filtered_result]))
             print(f"[DEBUG] Unique sources: {unique_sources}")
             
-            # Sources already filtered before LLM generation, just use them directly
-            final_response = llm_response
+            # Check source relevance
+            irrelevant_sources = []
+            relevant_sources = []
+            for src in unique_sources:
+                is_rel, matches = is_source_relevant(src, query)
+                if is_rel and matches:
+                    relevant_sources.append((src, matches))
+                else:
+                    irrelevant_sources.append(src)
+            
+            # Add warning if sources seem irrelevant
+            source_warning = ""
+            if irrelevant_sources and len(irrelevant_sources) == len(unique_sources):
+                # All sources seem irrelevant
+                source_warning = "\n\n**Note:** The retrieved source documents may not be highly relevant to your query. Consider uploading documents specifically about this topic."
+                print(f"[WARNING] All sources appear irrelevant to query: {query}")
+            elif irrelevant_sources:
+                print(f"[WARNING] Potentially irrelevant sources: {irrelevant_sources}")
+                print(f"[WARNING] Relevant sources with matches: {relevant_sources}")
+            
+            # Append warning to response if needed
+            final_response = llm_response + source_warning if source_warning else llm_response
             
             # NEW: Validate and fix citations
             final_response, citation_warnings = validate_and_fix_citations(final_response, unique_sources)
@@ -2203,27 +2137,7 @@ CRITICAL REQUIREMENTS:
     except Exception as e:
         print(f"[LLM Exception]: {e}")
     
-    # FALLBACK: Generate answer from LLM knowledge when RAG fails
-    print(f"[FALLBACK] RAG LLM failed or timed out. Generating answer from LLM knowledge...")
-    
-    try:
-        # Generate answer from LLM knowledge without RAG context
-        fallback_response = await generate_llm_knowledge_response(query)
-        if fallback_response:
-            return {
-                "response": fallback_response,
-                "answer": fallback_response,
-                "sources": [],  # No sources - this is from LLM knowledge
-                "confidence": 0.7,
-                "retrieval_info": {
-                    "method": "llm_knowledge_fallback",
-                    "note": "Answer generated from LLM pre-trained knowledge (RAG sources insufficient or unavailable)"
-                }
-            }
-    except Exception as e2:
-        print(f"[FALLBACK ERROR] Failed to generate LLM knowledge response: {e2}")
-    
-    # Ultimate fallback - return raw chunks with scores
+    # Fallback - return raw chunks with scores
     preview_parts = []
     for r in filtered_result[:5]:
         score = r.get("rerank_score", r.get("similarity", 0))
@@ -2244,161 +2158,57 @@ CRITICAL REQUIREMENTS:
         }
     }
 
-async def generate_llm_knowledge_response(query: str) -> str:
-    """
-    Generate a comprehensive answer from LLM knowledge when RAG sources are insufficient.
-    This is a fallback when no relevant documents are found in the knowledge base.
-    """
-    import os
-    import re
-    
-    # Determine output length based on query complexity
-    query_lower = query.lower()
-    is_comprehensive = any(word in query_lower for word in ['comprehensive', 'detailed', 'explain', 'how to', 'overview'])
-    
-    if is_comprehensive:
-        target_words = "1500-2000"
-        detail_level = "comprehensive"
-    else:
-        target_words = "800-1200"
-        detail_level = "balanced"
-    
-    prompt = f"""Provide a {detail_level}, well-structured answer to the user's question.
-
-User Question: {query}
-
-Requirements:
-1. Write {target_words} words
-2. Start with a clear title (# Title) and executive summary
-3. Use proper sections (## Section Name)
-4. Include specific details, examples, and technical information
-5. Write authoritatively - do NOT mention sources, documents, or the knowledge base
-6. Do NOT add any disclaimer notes at the end about how the answer was generated
-7. Do NOT cite specific sources (Source 1, 2, etc.) - just provide the answer directly
-7. **MATH FORMATTING**: Use Unicode mathematical symbols (e.g., |ψ⟩, α, β, ≤, ≥) for equations:
-   - GOOD: |ψ⟩ = α|0⟩ + β|1⟩ (Unicode symbols, single line, single spaces)
-   - BAD: H   |0⟩ or (  |0⟩ +  |1⟩ ) - never use tabs or multiple spaces
-   - BAD: LaTeX code like $\psi$ or $\alpha$
-   - CRITICAL: Keep every equation on a SINGLE LINE - never break with newlines
-   - Use SINGLE spaces only in equations
-   - Describe complex formulas first, then show the complete equation on one line
-
-Structure:
-# [Clear Title]
-
-## Executive Summary
-[2-3 sentence summary]
-
-## [Main Section 1]
-[Detailed content]
-
-## [Main Section 2]
-[Detailed content]
-
-## [Main Section 3]
-[Detailed content]
-
-## Conclusion
-[Summary and key takeaways]
-"""
-
-    system_prompt = "You are an expert providing comprehensive technical information. Write authoritatively based on your knowledge. Do not cite specific sources. Do not add any disclaimer notes about how the answer was generated. Just provide the direct answer."
-    
-    try:
-        # Try DeepSeek first
-        from minimax_fixed import deepseek_complete
-        
-        response = await deepseek_complete(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            model="deepseek-chat",
-            max_tokens=4096,
-            temperature=0.4
-        )
-        
-        # Note removed - response is returned as-is from LLM
-        return response
-    except Exception as e:
-        print(f"[LLM Knowledge Fallback Error]: {e}")
-        return None
-
-
 # ============ LLM Response Generator ============
 import sys
 sys.path.insert(0, '/Users/ken/clawd_workspace/projects/KG_RAG/v1.0-beta/unified_indexing')
 from minimax_fixed import minimax_complete
 
-async def generate_llm_response(query: str, context: str, target_words: str = "~1000", detail_level: str = "balanced") -> str:
-    """Generate a well-formatted response using LLM from provided context"""
+async def generate_llm_response(query: str, context: str) -> str:
+    """Generate a well-formatted response using LLM"""
     
+    # Extract stock code if present
     import re
+    stock_match = re.search(r'(\d{4,5}\.hk|\d{4,5})', query.lower())
+    stock_code = stock_match.group(1) if stock_match else query
     
-    # Check if context is substantial
-    context_length = len(context.strip()) if context else 0
-    has_context = context_length > 100
+    # Try to extract company name from context
+    company_name = stock_code
+    if "越疆" in context:
+        company_name = "越疆 (Dobot)"
+    elif "中國有色礦業" in context or "China Nonferrous" in context:
+        company_name = "中國有色礦業 (China Nonferrous Mining)"
     
-    # Set max_tokens based on detail level
-    if detail_level == "ultra-deep":
-        max_tokens = 4096
-    elif detail_level == "comprehensive":
-        max_tokens = 3500
-    elif detail_level == "balanced":
-        max_tokens = 2500
-    else:  # quick
-        max_tokens = 1500
-    
-    if has_context:
-        # Generic prompt for any document type (not just financial)
-        prompt = f"""Based on the provided context documents, please answer the user's question.
+    prompt = f"""請根據以下上下文資料，回答用戶的問題。
 
-User Question: {query}
+用戶問題: {query}
 
-Context from documents:
-{context[:4000]}
+請用以下格式組織回答 (使用Markdown格式):
 
-REQUIREMENTS:
-1. WORD COUNT: Your response MUST be approximately {target_words} words. This is a HARD REQUIREMENT.
-2. Start with a clear title (# Title)
-3. Provide an executive summary (2-3 sentences)
-4. Use sections (## Section Name) for detailed content
-5. Include specific information, examples, and insights FROM THE CONTEXT
-6. Cite relevant information from the provided documents
-7. If the context doesn't fully answer the question, mention what additional information would be helpful
+## {{標題}}
 
-Format your response in Markdown with proper headings."""
+### 📊 摘要
+(用2-3句話概括公司基本情況)
 
-        system_prompt = f"You are a helpful assistant that analyzes documents and provides {detail_level} answers based on the provided context. Target length: {target_words} words. Always reference specific information from the documents."
-    else:
-        # No context available - use general knowledge
-        prompt = f"""Please provide a comprehensive answer to the user's question.
+### 📈 詳細分析
+(根據上下文提供詳細資訊，包括財務數據、業務發展、風險因素等)
 
-User Question: {query}
+### 💡 結論
+(如有投資建議請簡要說明)
 
-REQUIREMENTS:
-1. WORD COUNT: Your response MUST be approximately {target_words} words. This is a HARD REQUIREMENT.
-2. Start with a clear title (# Title)
-3. Provide an executive summary (2-3 sentences)
-4. Use sections (## Section Name) for detailed content
-5. Provide general knowledge on the topic
-6. Do NOT mention sources, documents, or how the answer was generated
-7. Do NOT add any disclaimer notes at the end
+---
+上下文資料:
+{context[:3000]}
 
-Format your response in Markdown with proper headings."""
+請用繁體中文回答，確保回答基於提供的上下文資料。不要列出來源chunk。"""
 
-        system_prompt = f"You are a helpful assistant providing {detail_level} information based on your training knowledge. Target length: {target_words} words. Do not add disclaimer notes."
-    
     try:
-        from minimax_fixed import minimax_complete
         response = await minimax_complete(
             prompt=prompt,
-            system_prompt=system_prompt,
+            system_prompt="你是一個專業的金融分析師，擅長分析股票和提供投資建議。請用Markdown格式組織回答，包含標題、摘要、詳細分析和結論。",
             model="MiniMax-M2.1",
-            max_tokens=max_tokens,
-            temperature=0.4
+            max_tokens=2000,
+            temperature=0.7
         )
-        
-        # Response returned without source note - citations in text indicate sources used
-        
         return response
     except Exception as e:
         raise Exception(f"LLM generation failed: {str(e)}")
@@ -2406,33 +2216,10 @@ Format your response in Markdown with proper headings."""
 # ============ Chat with Document ============
 @app.post("/api/v1/chat/with-doc")
 async def chat_with_doc(request: dict):
-    """Query with document upload - searches BOTH uploaded files AND existing database"""
+    """Query with document upload - uploads file then searches"""
     message = request.get("message", "")
     filename = request.get("filename", "")
     filenames = request.get("filenames", [])  # Support multiple files
-    
-    # Get query mode for word count control
-    is_ultra = request.get("ultra_comprehensive", False)
-    is_comprehensive = request.get("detailed", False)
-    top_k = request.get("top_k", 20)
-    
-    # Word count targets based on mode
-    if is_ultra:
-        target_words = ">2000"
-        detail_level = "ultra-deep"
-        max_context_chunks = 50  # More chunks for ultra
-    elif is_comprehensive:
-        target_words = "1500-2000"
-        detail_level = "comprehensive"
-        max_context_chunks = 30
-    elif top_k >= 20:
-        target_words = "~1000"
-        detail_level = "balanced"
-        max_context_chunks = 20
-    else:
-        target_words = "~500"
-        detail_level = "quick"
-        max_context_chunks = 10
     
     # Handle both single filename and array of filenames
     if isinstance(filename, str) and filename:
@@ -2458,94 +2245,46 @@ async def chat_with_doc(request: dict):
     doc_ids = [hashlib.md5(f.encode()).hexdigest()[:12] for f in file_list] if file_list else []
     
     # DEBUG: Log what's being received
-    print(f"[DEBUG] chat/with-doc: message='{message}', mode={detail_level}, file_list={file_list}, doc_ids={doc_ids}")
+    print(f"[DEBUG] chat/with-doc: message='{message}', file_list={file_list}, doc_ids={doc_ids}")
     
-    # Collect results from BOTH uploaded files AND entire database
+    # Extract keywords from query (stock codes, Chinese)
+    stock_codes = re.findall(r'(\d{4,5}\.hk|\d{4,5})', message.lower())
+    chinese = re.findall(r'[\u4e00-\u9fff]+', message)
+    keywords = stock_codes[:2] + chinese[:2]
+    
+    # If no keywords found, use the original message as search term
+    if not keywords:
+        keywords = [message.lower()]
+    
+    # Collect results from both attached files and entire database
     all_results = []
-    file_sources = set()  # Track which sources are from uploaded files
     
-    try:
-        # Step 1: Get chunks from UPLOADED FILES
+    # Search using keywords in attached files AND entire database
+    for keyword in keywords:
+        # Search in attached files
         if doc_ids:
-            try:
-                # First try: Get ALL chunks from uploaded files directly (simple query)
-                placeholders = ','.join([f'${i+1}' for i in range(len(doc_ids))])
-                file_chunks_query = f"SELECT content, entity_id FROM chunks WHERE entity_id IN ({placeholders}) LIMIT 100"
-                
-                try:
-                    file_chunks = await asyncio.wait_for(
-                        storage.client.fetch(file_chunks_query, *doc_ids),
-                        timeout=10.0
-                    )
-                    
-                    if file_chunks and len(file_chunks) > 0:
-                        print(f"[DEBUG] Found {len(file_chunks)} total chunks from uploaded files")
-                        # Add ALL chunks from uploaded files - they're already indexed
-                        for chunk in file_chunks:
-                            all_results.append({"content": chunk.get('content', ''), "source": "uploaded"})
-                        print(f"[DEBUG] Added {len(file_chunks)} chunks from uploaded files")
-                except Exception as e:
-                    print(f"[DEBUG] Direct chunk fetch failed: {e}")
-                
-                # Second try: Vector search for better relevance (optional enhancement)
-                if len(all_results) < 5:
-                    try:
-                        query_embedding = get_minimax_embedding(message)
-                        from storage import DistanceMetric
-                        
-                        vector_results = await storage.search_chunks(
-                            query_vector=query_embedding,
-                            limit=20,
-                            distance_metric=DistanceMetric.COSINE,
-                            match_threshold=0.2
-                        )
-                        
-                        # Add vector results not already included
-                        existing = {r["content"][:50] for r in all_results}
-                        for r in vector_results:
-                            if r.content[:50] not in existing:
-                                chunk_doc_id = r.metadata.get('doc_id') or r.entity_id
-                                if chunk_doc_id in doc_ids or r.entity_id in doc_ids:
-                                    all_results.append({"content": r.content, "source": "uploaded"})
-                                    existing.add(r.content[:50])
-                                    
-                        print(f"[DEBUG] Vector search added more chunks, total: {len(all_results)}")
-                    except Exception as e:
-                        print(f"[DEBUG] Vector search failed: {e}")
-                        
-            except Exception as e:
-                print(f"[DEBUG] File search error: {e}")
+            placeholders = ','.join([f'${i+1}' for i in range(len(doc_ids))])
+            query = f"SELECT content FROM chunks WHERE entity_id IN ({placeholders}) AND (content ILIKE ${len(doc_ids)+1} OR content ILIKE ${len(doc_ids)+2}) LIMIT 10"
+            file_result = await storage.client.fetch(query, *doc_ids, f"%{keyword}%", f"%0{keyword}%")
+            if file_result:
+                all_results.extend([{"content": r.get("content", "")} for r in file_result])
         
-        # Step 2: ALSO search ENTIRE DATABASE (always do this, not just fallback)
-        try:
-            query_embedding = get_minimax_embedding(message)
-            from storage import DistanceMetric
-            
-            # Calculate how many more chunks we need
-            remaining_slots = max_context_chunks - len(all_results)
-            
-            if remaining_slots > 0:
-                vector_results = await storage.search_chunks(
-                    query_vector=query_embedding,
-                    limit=remaining_slots,
-                    distance_metric=DistanceMetric.COSINE,
-                    match_threshold=0.3
-                )
-                
-                # Add database results (avoiding duplicates)
-                existing_content = {r["content"][:100] for r in all_results}
-                for r in vector_results:
-                    content_key = r.content[:100]
-                    if content_key not in existing_content:
-                        all_results.append({"content": r.content, "source": "database"})
-                        existing_content.add(content_key)
-                        
-                print(f"[DEBUG] Added {len(all_results)} total chunks from files + database")
-        except Exception as e:
-            print(f"[DEBUG] Database search error: {e}")
-        
-    except Exception as e:
-        print(f"[DEBUG] Overall search error: {e}")
+        # Also ALWAYS search in entire database as fallback
+        db_result = await storage.client.fetch(
+            "SELECT content FROM chunks WHERE content ILIKE $1 OR content ILIKE $2 LIMIT 10",
+            f"%{keyword}%", f"%0{keyword}%"
+        )
+        if db_result:
+            all_results.extend([{"content": r.get("content", "")} for r in db_result])
+    
+    # Also try exact message match in database
+    if not all_results:
+        db_result = await storage.client.fetch(
+            "SELECT content FROM chunks WHERE content ILIKE $1 LIMIT 20",
+            f"%{message}%"
+        )
+        if db_result:
+            all_results.extend([{"content": r.get("content", "")} for r in db_result])
     
     # Remove duplicates
     seen = set()
@@ -2612,7 +2351,7 @@ async def chat_with_doc(request: dict):
     # For file queries, sources are the uploaded files
     source_list = file_list if file_list else ["database"]
     try:
-        llm_response = await generate_llm_response(message, context, target_words, detail_level)
+        llm_response = await generate_llm_response(message, context)
         return {
             "response": llm_response,
             "answer": llm_response,

@@ -39,6 +39,8 @@ function printAnswer(event?: Event): void {
     .replace(/^# (.+)$/gm, '<div class="h1-bold">$1</div>')
     // Convert ## text to bold h2 style
     .replace(/^## (.+)$/gm, '<div class="h2-bold">$1</div>')
+    // Convert ### text to bold h3 style
+    .replace(/^### (.+)$/gm, '<div class="h3-bold">$1</div>')
     .replace(/\n/g, '<br>');
 
   const html = `<!DOCTYPE html>
@@ -72,6 +74,13 @@ function printAnswer(event?: Event): void {
         margin-top: 0.6cm; 
         margin-bottom: 0.3cm;
         color: #333;
+      }
+      .h3-bold { 
+        font-size: 12pt; 
+        font-weight: bold; 
+        margin-top: 0.5cm; 
+        margin-bottom: 0.2cm;
+        color: #555;
       }
       strong { font-weight: bold; }
     }
@@ -108,6 +117,13 @@ function printAnswer(event?: Event): void {
         margin-top: 15px; 
         margin-bottom: 8px;
         color: #333;
+      }
+      .h3-bold { 
+        font-size: 14pt; 
+        font-weight: bold; 
+        margin-top: 12px; 
+        margin-bottom: 6px;
+        color: #444;
       }
       strong { font-weight: bold; }
     }
@@ -297,13 +313,13 @@ async function handleRunQuery(): Promise<void> {
     }
     if (Array.isArray(sources)) {
       // Handle both string array and object array
-      lastSources = sources.map(s => {
+      lastSources = sources.map((s: unknown): string => {
         if (typeof s === 'string') return s;
         // If source is an object with filename or doc_id, extract it
         if (s && typeof s === 'object') {
-          return (s as Record<string, unknown>).filename || 
-                 (s as Record<string, unknown>).doc_id || 
-                 (s as Record<string, unknown>).name || 
+          return ((s as Record<string, unknown>).filename as string) || 
+                 ((s as Record<string, unknown>).doc_id as string) || 
+                 ((s as Record<string, unknown>).name as string) || 
                  JSON.stringify(s);
         }
         return String(s);
@@ -313,20 +329,37 @@ async function handleRunQuery(): Promise<void> {
     }
     console.log('[Query] Processed sources:', lastSources);
     
-    // Build answer with reference section for print output
-    let answerWithRefs = responseText;
-    if (lastSources.length > 0) {
-      // We have actual source filenames
-      answerWithRefs += '\n\n\n## References\n\n';
-      lastSources.forEach((src, idx) => {
-        answerWithRefs += `${idx + 1}. ${src}\n`;
+    // Extract which sources are actually CITED in the response text
+    const citedSourceNumbers = new Set<number>();
+    const sourceCitations = responseText.match(/Source\s+(\d+)/gi);
+    if (sourceCitations) {
+      sourceCitations.forEach(citation => {
+        const match = citation.match(/\d+/);
+        if (match) {
+          citedSourceNumbers.add(parseInt(match[0], 10));
+        }
       });
-    } else if (typeof sources === 'number' && sources > 0) {
-      // Backend only returned a count - show that
-      answerWithRefs += '\n\n\n## References\n\n';
-      answerWithRefs += `This answer was generated from ${sources} source documents.\n`;
-      answerWithRefs += '(Source filenames not available from backend API.)';
     }
+    console.log('[Query] Sources cited in text:', Array.from(citedSourceNumbers));
+    
+    // Build answer with reference section for print output
+    // ONLY include references that are actually CITED in the text
+    let answerWithRefs = responseText;
+    if (citedSourceNumbers.size > 0 && lastSources.length > 0) {
+      // Filter to only cited sources
+      const citedSources = Array.from(citedSourceNumbers)
+        .sort((a, b) => a - b)
+        .map(num => lastSources[num - 1])  // Source 1 = index 0
+        .filter(src => src !== undefined);  // Remove undefined
+      
+      if (citedSources.length > 0) {
+        answerWithRefs += '\n\n\n## References\n\n';
+        citedSources.forEach((src, idx) => {
+          answerWithRefs += `${idx + 1}. ${src}\n`;
+        });
+      }
+    }
+    // Note removed - response shown as-is from backend
     lastAnswerText = answerWithRefs;
     
     if (printBtn) printBtn.style.display = 'inline-block';
@@ -335,29 +368,44 @@ async function handleRunQuery(): Promise<void> {
     if (responseText.startsWith('Found') && responseText.includes('relevant chunks')) {
       renderTimeoutResponse(responseText, answerText!);
     } else {
-      // Format the response with improved styling - include references
+      // Format the response with improved styling - include ONLY cited references
       let displayText = responseText;
-      if (lastSources.length > 0) {
-        // We have actual source filenames
-        displayText += '\n\n\n## References\n\n' + lastSources.map((src, idx) => `${idx + 1}. ${src}`).join('\n');
-      } else if (typeof sources === 'number' && sources > 0) {
-        // Backend only returned a count - show that
-        displayText += '\n\n\n## References\n\n';
-        displayText += `This answer was generated from ${sources} source documents.\n`;
-        displayText += '(Source filenames not available from backend API.)';
+      if (citedSourceNumbers.size > 0 && lastSources.length > 0) {
+        // Filter to only cited sources
+        const citedSources = Array.from(citedSourceNumbers)
+          .sort((a, b) => a - b)
+          .map(num => lastSources[num - 1])
+          .filter(src => src !== undefined);
+        
+        if (citedSources.length > 0) {
+          displayText += '\n\n\n## References\n\n' + citedSources.map((src, idx) => `${idx + 1}. ${src}`).join('\n');
+        }
       }
+      // Note removed - response shown as-is from backend
       answerText!.innerHTML = formatQueryResponse(displayText);
       
       // Render math formulas using KaTeX
       setTimeout(() => renderMathInElement(answerText!), 100);
     }
     
-    // Show sources
+    // Show sources - ONLY those that are CITED in the answer text
     const rawSources = result.sources || result.source_documents;
-    if (lastSources.length > 0) {
-      sourcesText!.innerHTML = lastSources
-        .map(s => `<div class="source-item">${escapeHtml(s)}</div>`)
-        .join('');
+    if (citedSourceNumbers.size > 0 && lastSources.length > 0) {
+      // Filter to only cited sources
+      const citedSources = Array.from(citedSourceNumbers)
+        .sort((a, b) => a - b)
+        .map(num => lastSources[num - 1])
+        .filter(src => src !== undefined);
+      
+      if (citedSources.length > 0) {
+        sourcesText!.innerHTML = citedSources
+          .map(s => `<div class="source-item">${escapeHtml(s)}</div>`)
+          .join('');
+      } else {
+        sourcesText!.textContent = 'No specific sources cited in the answer.';
+      }
+    } else if (lastSources.length > 0) {
+      sourcesText!.innerHTML = `<div class="source-item">Sources available but not cited in answer</div>`;
     } else if (typeof rawSources === 'number') {
       sourcesText!.innerHTML = `<div class="source-item">Found ${rawSources} sources (filenames not available - backend config issue)</div>`;
     } else {
@@ -382,7 +430,7 @@ async function handleRunQuery(): Promise<void> {
  * 3. Format tables with proper boundaries
  * 4. Clean up excessive newlines
  */
-function formatQueryResponse(text: string): string {
+export function formatQueryResponse(text: string): string {
   if (!text) return '';
   
   let cleaned = text;
@@ -426,6 +474,14 @@ function formatQueryResponse(text: string): string {
   
   // Remove standalone parentheses with instructions
   cleaned = cleaned.replace(/^\s*\([^)]+\)\s*$/gmi, '');
+  
+  // Fix math equation spacing issues
+  // Remove tabs and excessive spaces around math symbols
+  cleaned = cleaned.replace(/([A-Za-z])(\t+|\s{2,})([|⟨⟩])/g, '$1 $3');  // H|0⟩ not H   |0⟩
+  cleaned = cleaned.replace(/(\))\t+|\s{2,}([|⟨⟩])/g, '$1 $2');  // (|0⟩ + |1⟩) not (  |0⟩
+  cleaned = cleaned.replace(/([|⟨⟩][^|⟨⟩]*?)(\t+|\s{2,})(?=\))/g, '$1');  // Fix spaces before closing paren
+  cleaned = cleaned.replace(/\t+/g, ' ');  // Replace all tabs with single space
+  cleaned = cleaned.replace(/\s{3,}/g, ' ');  // Replace 3+ spaces with single space
   
   // Format markdown headings with bold styling
   // # Heading → <strong class="h1">Heading</strong>
@@ -486,7 +542,7 @@ function formatQueryResponse(text: string): string {
   
   cleaned = formattedLines.join('\n');
   
-  // Format bold and italic text (but not inside math formulas)
+  // Format bold and italic text
   cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   cleaned = cleaned.replace(/\*([^*]+)\*/g, '<em>$1</em>');
   
@@ -667,42 +723,56 @@ export function getQueryTabHTML(): string {
         /* Query Response Formatting */
         .query-answer {
           line-height: 1.7;
+          white-space: pre-wrap;
+          word-wrap: break-word;
         }
         
+        /* Keep math equations on single line */
+        .query-answer .math-inline {
+          white-space: nowrap;
+          display: inline-block;
+        }
+        
+        /* H1 - Biggest, boldest */
         .query-answer .query-h1 {
+          display: block;
+          font-size: 1.8em;
+          font-weight: 800;
+          color: var(--primary-color, #4CAF50);
+          margin-top: 24px;
+          margin-bottom: 16px;
+          padding-bottom: 10px;
+          border-bottom: 3px solid var(--primary-color, #4CAF50);
+        }
+        
+        /* H2 - Bigger, bold */
+        .query-answer .query-h2 {
           display: block;
           font-size: 1.4em;
           font-weight: 700;
-          color: var(--primary-color, #4CAF50);
+          color: var(--text-primary, #e0e0e0);
           margin-top: 20px;
           margin-bottom: 12px;
-          padding-bottom: 8px;
-          border-bottom: 2px solid var(--primary-color, #4CAF50);
+          padding-left: 12px;
+          border-left: 4px solid var(--primary-color, #4CAF50);
         }
         
-        .query-answer .query-h2 {
+        /* H3 - Big, bold */
+        .query-answer .query-h3 {
           display: block;
           font-size: 1.2em;
           font-weight: 600;
           color: var(--text-primary, #e0e0e0);
           margin-top: 16px;
           margin-bottom: 10px;
-          padding-left: 12px;
-          border-left: 3px solid var(--primary-color, #4CAF50);
+          border-left: 3px solid var(--accent-secondary, #64b5f6);
+          padding-left: 10px;
         }
         
-        .query-answer .query-h3 {
-          display: block;
-          font-size: 1.05em;
-          font-weight: 600;
-          color: var(--text-secondary, #b0b0b0);
-          margin-top: 14px;
-          margin-bottom: 8px;
-        }
-        
+        /* H4 - Medium, semi-bold */
         .query-answer .query-h4 {
           display: block;
-          font-size: 1em;
+          font-size: 1.1em;
           font-weight: 600;
           color: var(--text-secondary, #b0b0b0);
           margin-top: 12px;
@@ -714,6 +784,12 @@ export function getQueryTabHTML(): string {
           content: "";
           display: block;
           margin-top: 8px;
+        }
+        
+        /* Bold text **text** */
+        .query-answer strong {
+          font-weight: 600;
+          color: var(--text-primary, #e0e0e0);
         }
         
         /* Table Styling */
