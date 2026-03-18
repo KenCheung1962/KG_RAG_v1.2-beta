@@ -2486,56 +2486,60 @@ async def chat_with_doc(request: dict):
     file_sources = set()  # Track which sources are from uploaded files
     
     try:
-        # Step 1: Get chunks from UPLOADED FILES
+        # Step 1: Vector search on UPLOADED FILES first (most relevant)
         if doc_ids:
             try:
-                # First try: Get ALL chunks from uploaded files directly (simple query)
-                placeholders = ','.join([f'${i+1}' for i in range(len(doc_ids))])
-                file_chunks_query = f"SELECT content, entity_id FROM chunks WHERE entity_id IN ({placeholders}) LIMIT 100"
+                # Generate query embedding for vector search
+                query_embedding = get_ollama_embedding(message)
+                from storage import DistanceMetric
                 
-                try:
-                    file_chunks = await asyncio.wait_for(
-                        storage.client.fetch(file_chunks_query, *doc_ids),
-                        timeout=10.0
-                    )
-                    
-                    if file_chunks and len(file_chunks) > 0:
-                        print(f"[DEBUG] Found {len(file_chunks)} total chunks from uploaded files")
-                        # Add ALL chunks from uploaded files - they're already indexed
-                        for chunk in file_chunks:
-                            all_results.append({"content": chunk.get('content', ''), "source": "uploaded"})
-                        print(f"[DEBUG] Added {len(file_chunks)} chunks from uploaded files")
-                except Exception as e:
-                    print(f"[DEBUG] Direct chunk fetch failed: {e}")
+                # Search for relevant chunks in uploaded files using vector similarity
+                # We'll search all chunks but filter by entity_id
+                vector_results = await storage.search_chunks(
+                    query_vector=query_embedding,
+                    limit=30,  # Get more to filter by doc_ids
+                    distance_metric=DistanceMetric.COSINE,
+                    match_threshold=0.2
+                )
                 
-                # Second try: Vector search for better relevance (optional enhancement)
-                if len(all_results) < 5:
-                    try:
-                        query_embedding = get_ollama_embedding(message)
-                        from storage import DistanceMetric
+                # Filter to only keep chunks from uploaded files
+                for r in vector_results:
+                    chunk_doc_id = r.metadata.get('doc_id') or r.entity_id
+                    if chunk_doc_id in doc_ids or r.entity_id in doc_ids:
+                        all_results.append({
+                            "content": r.content, 
+                            "source": "uploaded",
+                            "similarity": r.similarity
+                        })
                         
-                        vector_results = await storage.search_chunks(
-                            query_vector=query_embedding,
-                            limit=20,
-                            distance_metric=DistanceMetric.COSINE,
-                            match_threshold=0.2
+                print(f"[DEBUG] Vector search found {len(all_results)} relevant chunks from uploaded files")
+                
+                # Fallback: If vector search returns few results, get more chunks directly
+                if len(all_results) < 5:
+                    print(f"[DEBUG] Vector search returned few results, fetching more chunks directly...")
+                    placeholders = ','.join([f'${i+1}' for i in range(len(doc_ids))])
+                    file_chunks_query = f"SELECT content, entity_id FROM chunks WHERE entity_id IN ({placeholders}) LIMIT 50"
+                    
+                    try:
+                        file_chunks = await asyncio.wait_for(
+                            storage.client.fetch(file_chunks_query, *doc_ids),
+                            timeout=10.0
                         )
                         
-                        # Add vector results not already included
-                        existing = {r["content"][:50] for r in all_results}
-                        for r in vector_results:
-                            if r.content[:50] not in existing:
-                                chunk_doc_id = r.metadata.get('doc_id') or r.entity_id
-                                if chunk_doc_id in doc_ids or r.entity_id in doc_ids:
-                                    all_results.append({"content": r.content, "source": "uploaded"})
-                                    existing.add(r.content[:50])
-                                    
-                        print(f"[DEBUG] Vector search added more chunks, total: {len(all_results)}")
+                        # Add chunks not already included
+                        existing = {r["content"][:100] for r in all_results}
+                        for chunk in file_chunks:
+                            content = chunk.get('content', '')
+                            if content[:100] not in existing:
+                                all_results.append({"content": content, "source": "uploaded"})
+                                existing.add(content[:100])
+                                
+                        print(f"[DEBUG] Fallback added chunks, total from files: {len(all_results)}")
                     except Exception as e:
-                        print(f"[DEBUG] Vector search failed: {e}")
+                        print(f"[DEBUG] Fallback chunk fetch failed: {e}")
                         
             except Exception as e:
-                print(f"[DEBUG] File search error: {e}")
+                print(f"[DEBUG] File vector search error: {e}")
         
         # Step 2: ALSO search ENTIRE DATABASE (always do this, not just fallback)
         try:
