@@ -1369,13 +1369,18 @@ async def generate_comprehensive_response(
     context: str,
     base_system_prompt: str,
     target_words: str,
-    max_sections: int = 6
+    max_sections: int = 6,
+    llm_config: dict = None
 ) -> str:
     """
     Multi-step generation for ultra-comprehensive responses.
     First creates an outline, then expands each section.
     """
-    from minimax_fixed import deepseek_complete
+    # Get LLM provider from config
+    if llm_config is None:
+        llm_config = {}
+    provider = llm_config.get("provider", "deepseek")
+    fallback = llm_config.get("fallback_provider")
     
     rerank_logger.info(f"Starting multi-step generation for '{query[:50]}...' targeting {target_words} words")
     
@@ -1401,10 +1406,11 @@ Output ONLY the outline in this format:
 ...etc"""
 
     try:
-        outline = await deepseek_complete(
+        outline = await llm_complete_with_provider(
             prompt=outline_prompt,
             system_prompt="You are an expert at structuring technical documentation. Create detailed, comprehensive outlines.",
-            model="deepseek-chat",
+            provider=provider,
+            fallback_provider=fallback,
             max_tokens=2000,
             temperature=0.3
         )
@@ -1412,10 +1418,11 @@ Output ONLY the outline in this format:
     except Exception as e:
         rerank_logger.error(f"Failed to generate outline: {e}")
         # Fallback to single-step generation
-        return await deepseek_complete(
+        return await llm_complete_with_provider(
             prompt=f"Write a comprehensive article about: {query}\n\nContext:\n{context[:4000]}\n\nTarget: {target_words} words",
             system_prompt=base_system_prompt,
-            model="deepseek-chat",
+            provider=provider,
+            fallback_provider=fallback,
             max_tokens=4000,
             temperature=0.4
         )
@@ -1469,10 +1476,11 @@ CRITICAL FORMAT REQUIREMENTS:
 Write the complete section now:"""
 
         try:
-            section_content = await deepseek_complete(
+            section_content = await llm_complete_with_provider(
                 prompt=section_prompt,
                 system_prompt=base_system_prompt,
-                model="deepseek-chat",
+                provider=provider,
+                fallback_provider=fallback,
                 max_tokens=1200,
                 temperature=0.4
             )
@@ -1500,10 +1508,11 @@ Your conclusion should:
 2. Discuss implications and future directions
 3. Provide closing thoughts for practitioners and researchers"""
 
-            conclusion = await deepseek_complete(
+            conclusion = await llm_complete_with_provider(
                 prompt=conclusion_prompt,
                 system_prompt=base_system_prompt,
-                model="deepseek-chat",
+                provider=provider,
+                fallback_provider=fallback,
                 max_tokens=800,
                 temperature=0.4
             )
@@ -1655,9 +1664,15 @@ async def chat(request: dict):
     - top_k: Number of chunks to retrieve (default: from config)
     - rerank: Whether to rerank results (default: true)
     - rerank_method: "hybrid", "vector", "keyword", or "none"
+    - llm_config: LLM provider configuration {provider: "deepseek"|"minimax", fallback_provider: ...}
     """
     # Accept both "query" and "message" fields
     query = request.get("query") or request.get("message", "")
+    
+    # Get LLM configuration from request (if provided)
+    llm_config = request.get("llm_config", {})
+    llm_provider = llm_config.get("provider", "deepseek")  # Default to DeepSeek
+    llm_fallback = llm_config.get("fallback_provider")
     
     # Get parameters from request
     requested_top_k = request.get("top_k", RERANK_CONFIG.final_top_k)
@@ -1825,7 +1840,10 @@ async def chat(request: dict):
     if not filtered_result:
         print(f"[INFO] No relevant chunks after filtering. Generating answer from LLM knowledge...")
         try:
-            fallback_response = await generate_llm_knowledge_response(query)
+            fallback_response = await generate_llm_knowledge_response(
+                query,
+                llm_config={"provider": llm_provider, "fallback_provider": llm_fallback}
+            )
             if fallback_response:
                 return {
                     "response": fallback_response,
@@ -1889,7 +1907,10 @@ async def chat(request: dict):
         print(f"[WARNING] All {len(unique_sources_check)} sources are irrelevant to query: {query}")
         print(f"[INFO] Skipping RAG, generating directly from LLM knowledge")
         try:
-            fallback_response = await generate_llm_knowledge_response(query)
+            fallback_response = await generate_llm_knowledge_response(
+                query,
+                llm_config={"provider": llm_provider, "fallback_provider": llm_fallback}
+            )
             if fallback_response:
                 return {
                     "response": fallback_response,
@@ -1928,7 +1949,7 @@ async def chat(request: dict):
         import asyncio
         import sys
         import os
-        sys.path.insert(0, '/Users/ken/clawd_workspace/projects/KG_RAG/v1.0-beta/unified_indexing')
+        sys.path.insert(0, '/Users/ken/clawd_workspace/projects/KG_RAG/v1.2-beta/unified_indexing')
         
         def run_llm_in_thread():
             """Run async LLM in a separate thread with its own event loop"""
@@ -2096,34 +2117,43 @@ CRITICAL REQUIREMENTS:
                         max_tokens = 2000  # Increased for 1000 words
                         temperature = 0.3
 
-                    # Try DeepSeek first for better long-form generation, fallback to MiniMax
+                    # Use provider-aware LLM completion with fallback support
                     try:
-                        from minimax_fixed import deepseek_complete
-                        
                         # Use multi-step generation for comprehensive mode (4 sections)
                         # Use single-pass for ultra mode (faster, avoids timeout issues)
                         if is_comprehensive and not is_ultra:
                             return await generate_comprehensive_response(
-                                query, context, system_prompt, target_words, max_sections=4
+                                query, context, system_prompt, target_words, max_sections=4,
+                                llm_config={"provider": llm_provider, "fallback_provider": llm_fallback}
                             )
                         
                         # Single-pass generation for ultra and standard modes
                         # Use appropriate max_tokens based on mode
                         tokens = 4096 if is_ultra else max_tokens
-                        return await deepseek_complete(
+                        return await llm_complete_with_provider(
                             prompt=prompt,
                             system_prompt=system_prompt,
-                            model="deepseek-chat",
+                            provider=llm_provider,
+                            fallback_provider=llm_fallback,
                             max_tokens=tokens,
                             temperature=temperature
                         )
                     except Exception as e:
-                        rerank_logger.warning(f"DeepSeek failed, falling back to MiniMax: {e}")
-                        return await minimax_complete(
+                        # If primary provider failed and no fallback configured, try the other provider
+                        other_provider = "minimax" if llm_provider == "deepseek" else "deepseek"
+                        rerank_logger.warning(f"Primary provider '{llm_provider}' failed: {e}")
+                        if llm_fallback:
+                            rerank_logger.info(f"Trying fallback provider '{llm_fallback}'...")
+                        else:
+                            rerank_logger.info(f"No fallback configured, trying '{other_provider}'...")
+                        
+                        fallback_to_use = llm_fallback or other_provider
+                        return await llm_complete_with_provider(
                             prompt=prompt,
                             system_prompt=system_prompt,
-                            model="MiniMax-M2.1",
-                            max_tokens=4000,
+                            provider=fallback_to_use,
+                            fallback_provider=None,  # Don't cascade further
+                            max_tokens=tokens,
                             temperature=temperature
                         )
                 
@@ -2229,7 +2259,10 @@ CRITICAL REQUIREMENTS:
     
     try:
         # Generate answer from LLM knowledge without RAG context
-        fallback_response = await generate_llm_knowledge_response(query)
+        fallback_response = await generate_llm_knowledge_response(
+            query,
+            llm_config={"provider": llm_provider, "fallback_provider": llm_fallback}
+        )
         if fallback_response:
             return {
                 "response": fallback_response,
@@ -2265,13 +2298,19 @@ CRITICAL REQUIREMENTS:
         }
     }
 
-async def generate_llm_knowledge_response(query: str) -> str:
+async def generate_llm_knowledge_response(query: str, llm_config: dict = None) -> str:
     """
     Generate a comprehensive answer from LLM knowledge when RAG sources are insufficient.
     This is a fallback when no relevant documents are found in the knowledge base.
     """
     import os
     import re
+    
+    # Get LLM provider from config
+    if llm_config is None:
+        llm_config = {}
+    provider = llm_config.get("provider", "deepseek")
+    fallback = llm_config.get("fallback_provider")
     
     # Determine output length based on query complexity
     query_lower = query.lower()
@@ -2326,13 +2365,12 @@ Structure:
     system_prompt = "You are an expert providing comprehensive technical information. Write authoritatively based on your knowledge. Do not cite specific sources. Do not add any disclaimer notes about how the answer was generated. Just provide the direct answer."
     
     try:
-        # Try DeepSeek first
-        from minimax_fixed import deepseek_complete
-        
-        response = await deepseek_complete(
+        # Use provider-aware LLM completion
+        response = await llm_complete_with_provider(
             prompt=prompt,
             system_prompt=system_prompt,
-            model="deepseek-chat",
+            provider=provider,
+            fallback_provider=fallback,
             max_tokens=4096,
             temperature=0.4
         )
@@ -2346,11 +2384,17 @@ Structure:
 
 # ============ LLM Response Generator ============
 import sys
-sys.path.insert(0, '/Users/ken/clawd_workspace/projects/KG_RAG/v1.0-beta/unified_indexing')
-from minimax_fixed import minimax_complete
+sys.path.insert(0, '/Users/ken/clawd_workspace/projects/KG_RAG/v1.2-beta/unified_indexing')
+from minimax_fixed import minimax_complete, llm_complete_with_provider
 
-async def generate_llm_response(query: str, context: str, target_words: str = "~1000", detail_level: str = "balanced") -> str:
+async def generate_llm_response(query: str, context: str, target_words: str = "~1000", detail_level: str = "balanced", llm_config: dict = None) -> str:
     """Generate a well-formatted response using LLM from provided context"""
+    
+    # Get LLM provider from config (defaults to deepseek for backwards compatibility)
+    if llm_config is None:
+        llm_config = {}
+    provider = llm_config.get("provider", "deepseek")
+    fallback = llm_config.get("fallback_provider")
     
     import re
     
@@ -2409,11 +2453,12 @@ Format your response in Markdown with proper headings."""
         system_prompt = f"You are a helpful assistant providing {detail_level} information based on your training knowledge. Target length: {target_words} words. Do not add disclaimer notes."
     
     try:
-        from minimax_fixed import minimax_complete
-        response = await minimax_complete(
+        # Use the provider-aware LLM completion function
+        response = await llm_complete_with_provider(
             prompt=prompt,
             system_prompt=system_prompt,
-            model="MiniMax-M2.1",
+            provider=provider,
+            fallback_provider=fallback,
             max_tokens=max_tokens,
             temperature=0.4
         )
@@ -2431,6 +2476,11 @@ async def chat_with_doc(request: dict):
     message = request.get("message", "")
     filename = request.get("filename", "")
     filenames = request.get("filenames", [])  # Support multiple files
+    
+    # Get LLM configuration from request (if provided)
+    llm_config = request.get("llm_config", {})
+    llm_provider = llm_config.get("provider", "deepseek")  # Default to DeepSeek
+    llm_fallback = llm_config.get("fallback_provider")
     
     # Get query mode for word count control
     is_ultra = request.get("ultra_comprehensive", False)
@@ -2637,7 +2687,10 @@ async def chat_with_doc(request: dict):
     # For file queries, sources are the uploaded files
     source_list = file_list if file_list else ["database"]
     try:
-        llm_response = await generate_llm_response(message, context, target_words, detail_level)
+        llm_response = await generate_llm_response(
+            message, context, target_words, detail_level,
+            llm_config={"provider": llm_provider, "fallback_provider": llm_fallback}
+        )
         return {
             "response": llm_response,
             "answer": llm_response,

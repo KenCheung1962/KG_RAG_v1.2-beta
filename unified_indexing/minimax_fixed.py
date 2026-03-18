@@ -531,3 +531,64 @@ else:
 
 # Alias for deepseek_embed (used by some scripts)
 deepseek_embed = minimax_embed
+
+
+async def llm_complete_with_provider(
+    prompt: str,
+    system_prompt: Optional[str] = None,
+    provider: str = "deepseek",
+    fallback_provider: Optional[str] = None,
+    max_tokens: int = 4096,
+    temperature: float = 0.4,
+    **kwargs
+) -> str:
+    """
+    Generate LLM completion with provider selection and fallback support.
+    
+    Args:
+        prompt: The user prompt
+        system_prompt: Optional system prompt for context
+        provider: Primary LLM provider ("deepseek" or "minimax")
+        fallback_provider: Fallback provider if primary fails ("deepseek", "minimax", or None)
+        max_tokens: Maximum tokens to generate
+        temperature: Temperature for generation
+        **kwargs: Additional arguments
+    
+    Returns:
+        Generated text response
+    """
+    providers_to_try = [provider]
+    if fallback_provider and fallback_provider != provider:
+        providers_to_try.append(fallback_provider)
+    
+    last_error = None
+    
+    for prov in providers_to_try:
+        try:
+            if prov == "minimax":
+                print(f"[LLM] Using MiniMax for generation...")
+                return await minimax_complete(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    model="MiniMax-M2.5",
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    **kwargs
+                )
+            else:  # Default to DeepSeek
+                print(f"[LLM] Using DeepSeek for generation...")
+                return await deepseek_complete(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    model="deepseek-chat",
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    **kwargs
+                )
+        except Exception as e:
+            print(f"[LLM] Provider '{prov}' failed: {e}")
+            last_error = e
+            continue
+    
+    # All providers failed
+    raise last_error or Exception("All LLM providers failed")

@@ -3,10 +3,11 @@
  */
 
 import { API_URL, API_KEY } from '@/config';
+import { getLLMConfig } from '@/components/tabs/ConfigTab';
 import type {
   KGStats, DocStats, Document, DocumentStatus, UploadResult,
   QueryRequest, QueryResponse, QueryWithFilesRequest, HealthStatus,
-  FolderUploadRequest, FolderUploadResult
+  FolderUploadRequest, FolderUploadResult, LLMProviderConfig
 } from './types';
 
 /**
@@ -217,6 +218,13 @@ export async function sendQuery(
     request.message.toLowerCase().includes('detail') ||
     request.message.toLowerCase().includes('comprehensive');
   
+  // Get LLM configuration from ConfigTab
+  const llmConfig = getLLMConfig();
+  const providerConfig: LLMProviderConfig = {
+    provider: llmConfig.responseGeneration.primary,
+    fallback_provider: llmConfig.responseGeneration.fallback
+  };
+  
   // Enhance request for more comprehensive answers
   const enhancedRequest = {
     ...request,
@@ -236,7 +244,9 @@ export async function sendQuery(
     // Higher limits for comprehensive modes to ensure complete responses
     max_tokens: isUltra ? 8192 : (isComprehensive ? 8192 : 4096),
     // Use the user's message exactly as provided
-    message: request.message
+    message: request.message,
+    // Include LLM provider configuration
+    llm_config: providerConfig
   };
   
   // Extended timeout based on mode
@@ -273,6 +283,13 @@ export async function sendQueryWithFiles(
   const isUltra = request.ultra_comprehensive;
   const isComprehensive = request.detailed;
   
+  // Get LLM configuration from ConfigTab
+  const llmConfig = getLLMConfig();
+  const providerConfig: LLMProviderConfig = {
+    provider: llmConfig.responseGenerationWithFile.primary,
+    fallback_provider: llmConfig.responseGenerationWithFile.fallback
+  };
+  
   // Enhance request based on mode
   const enhancedRequest = {
     ...request,
@@ -284,7 +301,9 @@ export async function sendQueryWithFiles(
     // Set max_tokens to prevent truncation
     max_tokens: isUltra ? 8192 : (isComprehensive ? 8192 : 4096),
     // Use the user's message exactly as provided
-    message: request.message
+    message: request.message,
+    // Include LLM provider configuration
+    llm_config: providerConfig
   };
   
   // Set timeout based on mode

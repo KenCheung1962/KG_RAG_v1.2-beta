@@ -49,14 +49,15 @@ export interface QueryRequest {
   /** Rerank method: hybrid, vector, keyword, none */
   rerank?: boolean;
   rerank_method?: string;
+  /** LLM provider configuration */
+  llm_config?: LLMProviderConfig;
 }
 
-export interface QueryResponse {
-  response?: string;
-  answer?: string;
-  sources?: string[] | number;
-  source_documents?: string[] | number;
-  detail?: string;
+export interface LLMProviderConfig {
+  /** Primary LLM provider: deepseek, minimax */
+  provider: 'deepseek' | 'minimax';
+  /** Fallback provider (optional) */
+  fallback_provider?: 'deepseek' | 'minimax' | null;
 }
 
 export interface QueryWithFilesRequest {
@@ -68,6 +69,16 @@ export interface QueryWithFilesRequest {
   detailed?: boolean;
   /** Enable ultra-comprehensive mode */
   ultra_comprehensive?: boolean;
+  /** LLM provider configuration */
+  llm_config?: LLMProviderConfig;
+}
+
+export interface QueryResponse {
+  response?: string;
+  answer?: string;
+  sources?: string[] | number;
+  source_documents?: string[] | number;
+  detail?: string;
 }
 
 export interface HealthStatus {
